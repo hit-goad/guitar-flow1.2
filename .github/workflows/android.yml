@@ -1,0 +1,95 @@
+name: Android 安装包
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 单元测试
+        run: npm test
+
+      - name: 构建 Web 产物
+        run: npm run build
+
+      - name: 生成 Android 工程
+        run: |
+          if [ ! -d android ]; then npx cap add android; fi
+          npx cap sync android
+          node scripts/patch-native.mjs
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: 构建 APK / AAB
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+          if [ -n "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" ]; then
+            echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > app/release.keystore
+            ./gradlew bundleRelease -Pandroid.injected.signing.store.file=$PWD/app/release.keystore \
+              -Pandroid.injected.signing.store.password=${{ secrets.ANDROID_KEYSTORE_PASSWORD }} \
+              -Pandroid.injected.signing.key.alias=${{ secrets.ANDROID_KEY_ALIAS }} \
+              -Pandroid.injected.signing.key.password=${{ secrets.ANDROID_KEY_PASSWORD }}
+          else
+            ./gradlew bundleRelease
+          fi
+
+      - name: 收集产物
+        run: |
+          mkdir -p artifacts
+          cp android/app/build/outputs/apk/debug/*.apk artifacts/ || true
+          cp android/app/build/outputs/bundle/release/*.aab artifacts/ || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: guitarflow-android
+          path: artifacts/*
+          if-no-files-found: warn
+
+      - name: 附加到 Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          fail_on_unmatched_files: false
+
+  pwa:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+      - uses: actions/deploy-pages@v4
+        continue-on-error: true

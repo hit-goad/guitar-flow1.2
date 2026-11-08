@@ -1,0 +1,77 @@
+{
+  "name": "guitarflow",
+  "productName": "GuitarFlow 吉他流",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "跨平台吉他谱跟练应用：谱面跟随滚动、逐音符音高试听、内录与实时音高检测、多源曲谱检索与智能导入",
+  "main": "electron/main.cjs",
+  "author": "GuitarFlow",
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview --host 127.0.0.1 --port 4173",
+    "assets": "node scripts/copy-assets.mjs",
+    "test": "vitest run",
+    "electron:dev": "concurrently -k \"vite\" \"wait-on http://127.0.0.1:5173 && electron .\"",
+    "electron:build": "npm run build && electron-builder --win nsis portable --publish never",
+    "cap:sync": "npm run build && cap sync",
+    "cap:add:android": "cap add android",
+    "cap:add:ios": "cap add ios",
+    "android:build": "npm run build && cap sync android",
+    "ios:build": "npm run build && cap sync ios"
+  },
+  "dependencies": {
+    "@coderline/alphatab": "1.9.0",
+    "@tonejs/midi": "^2.0.28",
+    "fuse.js": "^7.5.0",
+    "idb": "^8.0.4",
+    "pdfjs-dist": "^6.5.438",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^8.6.0",
+    "@capacitor/cli": "^8.6.0",
+    "@capacitor/core": "^8.6.0",
+    "@capacitor/ios": "^8.6.0",
+    "@coderline/alphatab-vite": "^1.9.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.2.1",
+    "concurrently": "^9.2.1",
+    "electron": "^45.2.3",
+    "electron-builder": "^26.0.12",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.6",
+    "vitest": "^5.1.0",
+    "wait-on": "^9.0.1"
+  },
+  "build": {
+    "appId": "app.guitarflow.player",
+    "productName": "GuitarFlow",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "artifactName": "GuitarFlow-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    }
+  }
+}

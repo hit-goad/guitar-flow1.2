@@ -1,0 +1,67 @@
+name: iOS 安装包
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  ios:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 构建 Web 产物
+        run: npm run build
+
+      - name: 生成 iOS 工程
+        run: |
+          if [ ! -d ios ]; then npx cap add ios; fi
+          npx cap sync ios
+          node scripts/patch-native.mjs
+
+      - name: 安装 CocoaPods 依赖
+        working-directory: ios/App
+        run: pod install --repo-update || pod install
+
+      - name: 归档（无签名）
+        working-directory: ios/App
+        run: |
+          xcodebuild -workspace App.xcworkspace -scheme App \
+            -configuration Release -sdk iphoneos \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            archive
+
+      - name: 打包未签名 IPA
+        run: |
+          mkdir -p Payload
+          cp -R "$RUNNER_TEMP/App.xcarchive/Products/Applications/App.app" Payload/
+          zip -r GuitarFlow-unsigned.ipa Payload
+          mkdir -p artifacts
+          cp GuitarFlow-unsigned.ipa artifacts/
+          # 如需正式签名，配置 CERT/PROFILE/TEAM_ID 后改用：
+          # xcodebuild -exportArchive -archivePath App.xcarchive \
+          #   -exportOptionsPlist ExportOptions.plist -exportPath artifacts/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: guitarflow-ios
+          path: artifacts/*
+          if-no-files-found: warn
+
+      - name: 附加到 Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          fail_on_unmatched_files: false
