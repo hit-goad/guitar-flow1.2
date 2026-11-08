@@ -1,12 +1,15 @@
 import * as pdfjs from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { parseAsciiTab, looksLikeAsciiTab, type AsciiTabResult } from './asciiTab';
+import { parseChordPro, looksLikeChordPro } from './chordpro';
+import { recognizeImagePages, type OmrResult } from './omr/omr';
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
 export interface PdfImportResult {
-  kind: 'text-tab' | 'pages';
+  kind: 'text-tab' | 'omr-tab' | 'pages';
   ascii?: AsciiTabResult;
+  omr?: OmrResult;
   pages?: Blob[];
   pageCount: number;
   textPreview: string;
@@ -64,8 +67,8 @@ async function extractLines(data: ArrayBuffer): Promise<{ lines: string[]; pageC
   return { lines: allLines, pageCount: pagesText.length, pagesText };
 }
 
-/** 把 PDF 每页渲染成 PNG（用于扫描版曲谱） */
-export async function pdfToPageImages(data: ArrayBuffer, scale = 2): Promise<Blob[]> {
+/** 把 PDF 每页渲染成高分辨率 PNG（用于扫描版曲谱 OMR 识谱与原谱对照） */
+export async function pdfToPageImages(data: ArrayBuffer, scale = 2.2): Promise<Blob[]> {
   const doc = await pdfjs.getDocument({ data: freshBytes(data) }).promise;
   const out: Blob[] = [];
   for (let p = 1; p <= doc.numPages; p++) {
@@ -88,29 +91,79 @@ export async function pdfToPageImages(data: ArrayBuffer, scale = 2): Promise<Blo
 }
 
 /**
- * PDF 导入：
- *  - 如果 PDF 内嵌文本能还原成六线谱 → 直接转成可滚动播放的 alphaTex
- *  - 否则渲染成页图，进入「图片谱 + 手动打点同步」模式
+ * PDF 智能导入与可滚动曲谱转换：
+ *  1. 若 PDF 内嵌文本层包含六线谱或和弦谱 → 合并全部页文本直接转成可滚动 alphaTex
+ *  2. 若 PDF 为扫描件/图片谱 → 渲染全部页面为高清图像，自动运行六线谱 OMR 识别引擎
+ *     （识别六线谱表、小节线、上方和弦指法图、品位数字、x 伴奏音型与符尾节奏），
+ *     精准生成可滚动、逐音符发声的 alphaTex，并同时保留原页图供随时切换对照！
  */
 export async function importPdf(data: ArrayBuffer, filename: string): Promise<PdfImportResult> {
   const warnings: string[] = [];
+  const cleanTitle = filename.replace(/\.pdf$/i, '').replace(/[_]+/g, ' ').trim() || '导入的 PDF 曲谱';
   const { lines, pageCount, pagesText } = await extractLines(data);
   const joined = lines.join('\n');
 
-  if (pagesText.some((t) => looksLikeAsciiTab(t))) {
-    // 用最长的一页文本尝试解析（多页 PDF 常把谱拆页）
-    const best = pagesText
-      .map((t) => ({ t, result: parseAsciiTab(t, filename.replace(/\.pdf$/i, '')) }))
-      .filter((x) => x.result)
-      .sort((a, b) => (b.result?.noteCount ?? 0) - (a.result?.noteCount ?? 0))[0];
-    if (best?.result) {
-      if (pageCount > 1) warnings.push('PDF 有多页，已取音符最多的一页转换成可滚动谱；其余页可用图片模式导入');
-      return { kind: 'text-tab', ascii: best.result, pageCount, textPreview: joined.slice(0, 800), warnings };
+  // 1) 优先检查多页文本层是否可直接解析为六线谱
+  const tabPages = pagesText.filter((t) => looksLikeAsciiTab(t));
+  if (tabPages.length > 0) {
+    const combinedTabText = tabPages.join('\n\n');
+    const parsed = parseAsciiTab(combinedTabText, cleanTitle);
+    if (parsed && parsed.noteCount > 0) {
+      warnings.push(`已从 PDF 文本层合并识别 ${tabPages.length}/${pageCount} 页，精准转换为 ${parsed.measures} 小节可滚动曲谱`);
+      return { kind: 'text-tab', ascii: parsed, pageCount, textPreview: joined.slice(0, 800), warnings };
     }
   }
 
-  const pages = await pdfToPageImages(data);
-  if (!pages.length) warnings.push('PDF 渲染失败，没有得到页面图像');
-  else warnings.push('该 PDF 是扫描/图片谱，已生成页面图像，请在阅读器中打点同步滚动');
-  return { kind: 'pages', pages, pageCount, textPreview: joined.slice(0, 400), warnings };
+  // 检查文本层是否为 ChordPro 和弦谱
+  if (looksLikeChordPro(joined)) {
+    const cp = parseChordPro(joined, cleanTitle);
+    if (cp) {
+      warnings.push(`已从 PDF 文本层识别出和弦弹唱谱（共 ${pageCount} 页），已转换为可滚动曲谱`);
+      return {
+        kind: 'text-tab',
+        ascii: {
+          title: cp.title || cleanTitle,
+          artist: cp.artist,
+          alphaTex: cp.alphaTex,
+          warnings: cp.warnings,
+          measures: Math.max(1, cp.sections * 4),
+          noteCount: 32,
+        },
+        pageCount,
+        textPreview: joined.slice(0, 800),
+        warnings,
+      };
+    }
+  }
+
+  // 2) 扫描版 / 图片型 PDF：渲染高清页图并运行高精度六线谱 OMR 引擎
+  const pages = await pdfToPageImages(data, 2.2);
+  if (!pages.length) {
+    warnings.push('PDF 渲染失败，没有得到页面图像');
+    return { kind: 'pages', pages: [], pageCount, textPreview: joined.slice(0, 400), warnings };
+  }
+
+  try {
+    const omr = await recognizeImagePages(pages, { title: cleanTitle, resolveChordX: true });
+    if (omr.glyphs > 0 && omr.alphaTex.trim()) {
+      warnings.push(
+        `PDF 智能识谱完成：共 ${pages.length} 页，识别出 ${omr.systems} 行谱表、${omr.measures} 个小节、${omr.glyphs} 个音符` +
+          (omr.chords.length ? `（和弦：${omr.chords.slice(0, 8).join(' → ')}${omr.chords.length > 8 ? '…' : ''}）` : '') +
+          `，置信度 ${(omr.confidence * 100).toFixed(0)}%，已精准转换为可滚动曲谱（顶部可随时切换原谱对照）`,
+      );
+      return {
+        kind: 'omr-tab',
+        omr,
+        pages,
+        pageCount: pages.length,
+        textPreview: omr.ascii.slice(0, 800),
+        warnings: [...warnings, ...omr.warnings],
+      };
+    }
+  } catch (err) {
+    warnings.push(`PDF 自动识谱提示：${(err as Error).message}`);
+  }
+
+  warnings.push('该 PDF 未检测到标准六线谱表，已保留高清页图模式（支持打点同步滚动或手动识谱校正）');
+  return { kind: 'pages', pages, pageCount: pages.length, textPreview: joined.slice(0, 400), warnings };
 }

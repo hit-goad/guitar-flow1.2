@@ -1,10 +1,10 @@
 import { openDB, type IDBPDatabase } from 'idb';
-import type { TakeRecord } from './library';
+import type { TakeKind, TakeRecord } from './library';
 import { uid } from './id';
 
 /**
- * 录音库：把每次录音（麦克风 / 应用内录）存到本机 IndexedDB，
- * 支持回放、改名、导出、删除——与参考 App 的「录音列表 + 导出」对齐。
+ * 录音库：把每次录音（麦克风 / 实时应用内录 / 系统内录 / 混录 / 离线内录）存到本机 IndexedDB，
+ * 支持回放、音高曲线分析、改名、导出（WAV/MP3）、删除。
  */
 
 interface TakesSchema {
@@ -26,11 +26,12 @@ function db() {
 
 export async function addTake(input: {
   title: string;
-  kind: 'mic' | 'internal';
+  kind: TakeKind;
   blob: Blob;
   durationSec: number;
   scoreId?: string;
   scoreTitle?: string;
+  pitchRange?: string;
 }): Promise<TakeRecord> {
   const record: TakeRecord = {
     id: uid('take'),
@@ -43,6 +44,7 @@ export async function addTake(input: {
     createdAt: Date.now(),
     scoreId: input.scoreId,
     scoreTitle: input.scoreTitle,
+    pitchRange: input.pitchRange,
   };
   await (await db()).put('takes', record);
   return record;
@@ -61,6 +63,12 @@ export async function renameTake(id: string, title: string): Promise<void> {
   const t = await getTake(id);
   if (!t) return;
   await (await db()).put('takes', { ...t, title });
+}
+
+export async function updateTakePitchRange(id: string, pitchRange: string): Promise<void> {
+  const t = await getTake(id);
+  if (!t) return;
+  await (await db()).put('takes', { ...t, pitchRange });
 }
 
 export async function deleteTake(id: string): Promise<void> {

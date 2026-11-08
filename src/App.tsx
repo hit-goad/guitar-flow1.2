@@ -1,7 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ScoreDoc } from './core/types';
-import { deleteScore, getScore, getSetting, listScores, putScore, setSetting, toggleFavorite } from './core/library';
-import { demoDoc } from './import';
+import {
+  deleteScore,
+  getScore,
+  getSetting,
+  listScores,
+  putScore,
+  setSetting,
+  toggleFavorite,
+  type TakeKind,
+} from './core/library';
+import { convertImageDocToScrollable, demoDoc } from './import';
 import { buildTimeline, notesWithTime, type Timeline } from './score/timeline';
 import { applyPageStarts, buildImageTimeline } from './score/imageTimeline';
 import { FollowController } from './score/follow';
@@ -9,6 +18,11 @@ import { ScorePlayer, type PlayerSnapshot } from './audio/player';
 import { PitchDetector, type PitchFrame } from './audio/pitch';
 import { renderTimelineToWav } from './audio/recorder';
 import { PcmRecorder, samplesToWav } from './audio/pcmRecorder';
+import {
+  analyzeAudioPitchContour,
+  LiveInternalRecorder,
+  type InternalCaptureMode,
+} from './audio/internalRecorder';
 import { addTake } from './core/takes';
 import { TakesPage } from './ui/TakesPage';
 import { audioContext, ensureRunning, synth } from './audio/synth';
@@ -40,10 +54,18 @@ export default function App() {
   const [listening, setListening] = useState(false);
   const [frame, setFrame] = useState<PitchFrame | null>(null);
   const [recent, setRecent] = useState<Array<{ midi: number; ts: number }>>([]);
-  const [stats, setStats] = useState<{ hits: number; misses: number; expected: number[] }>({ hits: 0, misses: 0, expected: [] });
+  const [stats, setStats] = useState<{ hits: number; misses: number; expected: number[] }>({
+    hits: 0,
+    misses: 0,
+    expected: [],
+  });
   const [micRecording, setMicRecording] = useState(false);
+  const [liveInternalRecording, setLiveInternalRecording] = useState(false);
+  const [internalMode, setInternalMode] = useState<InternalCaptureMode>('app-live');
   const [internalBusy, setInternalBusy] = useState(false);
-  const [lastTake, setLastTake] = useState<{ kind: 'mic' | 'internal'; name: string; blob: Blob } | null>(null);
+  const [convertingOmr, setConvertingOmr] = useState(false);
+  const [showOriginalPages, setShowOriginalPages] = useState(false);
+  const [lastTake, setLastTake] = useState<{ kind: TakeKind; name: string; blob: Blob } | null>(null);
   const [takesVersion, setTakesVersion] = useState(0);
   const [recSeconds, setRecSeconds] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
@@ -54,6 +76,7 @@ export default function App() {
   const followRef = useRef<FollowController | null>(null);
   const detectorRef = useRef<PitchDetector | null>(null);
   const micRef = useRef<PcmRecorder | null>(null);
+  const internalRecRef = useRef<LiveInternalRecorder | null>(null);
   const recTimerRef = useRef<number | null>(null);
   const viewerRef = useRef<ScoreViewerHandle | null>(null);
   const followModeRef = useRef(false);
@@ -61,7 +84,7 @@ export default function App() {
 
   const notify = useCallback((msg: string) => {
     setToast(msg);
-    window.setTimeout(() => setToast((cur) => (cur === msg ? null : cur)), 3600);
+    window.setTimeout(() => setToast((cur) => (cur === msg ? null : cur)), 3800);
   }, []);
 
   /* ---------------- 启动 ---------------- */
@@ -90,8 +113,6 @@ export default function App() {
     async (id: string) => {
       const found = await getScore(id);
       if (!found) return;
-      // 必须在挂载 ScoreViewer 之前定好 timeline，否则谱面加载完成后的 setTimeline
-      // 会被这里的「非图片谱 → null」覆盖掉（竞态）。
       if (found.format === 'image') {
         const pages = found.pages?.length ?? 1;
         const tl = buildImageTimeline(pages, 20);
@@ -99,17 +120,16 @@ export default function App() {
       } else {
         setTimeline(null);
       }
+      setShowOriginalPages(false);
       setActiveId(id);
       setDoc(found);
       setView('score');
-      // 移动端页面会滚动：切到谱面后把页面钉回顶部，避免导航被顶出屏幕
       const pinTop = () => {
         if (window.scrollY > 0) window.scrollTo({ top: 0 });
       };
       requestAnimationFrame(pinTop);
       window.setTimeout(pinTop, 120);
       window.setTimeout(pinTop, 360);
-      window.setTimeout(pinTop, 900);
       setPos(IDLE_POS);
       setErrorBanner(null);
       found.openedAt = Date.now();
@@ -118,6 +138,25 @@ export default function App() {
     },
     [refreshLibrary],
   );
+
+  /* ---------------- 一键将图片谱精准转换为可滚动曲谱 ---------------- */
+  const upgradeImageDocToScrollable = useCallback(async () => {
+    if (!doc || !doc.pages?.length) return;
+    setConvertingOmr(true);
+    try {
+      const { doc: upgraded, warnings } = await convertImageDocToScrollable(doc);
+      await putScore(upgraded);
+      setTimeline(null);
+      setShowOriginalPages(false);
+      setDoc(upgraded);
+      await refreshLibrary();
+      notify(warnings[0] || `已将《${upgraded.title}》转换为可滚动曲谱`);
+    } catch (err) {
+      notify(`识谱转换提示：${(err as Error).message}`);
+    } finally {
+      setConvertingOmr(false);
+    }
+  }, [doc, refreshLibrary, notify]);
 
   /* ---------------- 播放器 ---------------- */
   useEffect(() => {
@@ -192,7 +231,7 @@ export default function App() {
       await detector.start();
       listeningRef.current = true;
       setListening(true);
-      notify('麦克风已开启：能看到实时音高，也可用「跟我弹」让谱跟随你');
+      notify('实时音高检测已开启：可看到实时音高与音准偏差，也可开启「跟我弹」让曲谱跟随你滚动');
     } catch (err) {
       notify(`麦克风开启失败：${(err as Error).message}`);
     }
@@ -209,10 +248,10 @@ export default function App() {
           setStats({ hits: 0, misses: 0, expected: fc.state.expected });
         }
         playerRef.current?.pause();
-        if (!listeningRef.current) void toggleListen();
+        if (!listeningRef.current && !liveInternalRecording) void toggleListen();
       }
     },
-    [pos.beatIndex, toggleListen],
+    [pos.beatIndex, toggleListen, liveInternalRecording],
   );
 
   /* ---------------- 播放控制 ---------------- */
@@ -227,17 +266,20 @@ export default function App() {
     else await p.play();
   }, [notify]);
 
-  const seekSec = useCallback((sec: number) => {
-    playerRef.current?.seekSec(sec);
-    const tl = timeline;
-    if (tl) {
-      let idx = 0;
-      tl.beatSecs.forEach((t, i) => {
-        if (t <= sec) idx = i;
-      });
-      followRef.current?.seek(idx);
-    }
-  }, [timeline]);
+  const seekSec = useCallback(
+    (sec: number) => {
+      playerRef.current?.seekSec(sec);
+      const tl = timeline;
+      if (tl) {
+        let idx = 0;
+        tl.beatSecs.forEach((t, i) => {
+          if (t <= sec) idx = i;
+        });
+        followRef.current?.seek(idx);
+      }
+    },
+    [timeline],
+  );
 
   const seekBeat = useCallback(
     (index: number) => {
@@ -275,7 +317,7 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [view, togglePlay, seekBeat, pos.beatIndex, timeline]);
 
-  /* ---------------- 录音 ---------------- */
+  /* ---------------- 录音与内录（移植自《音高》APK） ---------------- */
   const toggleMicRecord = useCallback(async () => {
     if (micRecording) {
       const res = await micRef.current?.stop();
@@ -288,6 +330,8 @@ export default function App() {
       }
       if (res && res.samples.length > 0) {
         const wav = samplesToWav(res.samples, res.sampleRate);
+        const summary = await analyzeAudioPitchContour(wav, 180).catch(() => null);
+        const pitchRange = summary && summary.minNote !== '—' ? `${summary.minNote} ~ ${summary.maxNote}` : undefined;
         const take = await addTake({
           title: `${doc?.title ?? '即兴'} · 麦克风 ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`,
           kind: 'mic',
@@ -295,10 +339,11 @@ export default function App() {
           durationSec: res.durationSec,
           scoreId: doc?.id,
           scoreTitle: doc?.title,
+          pitchRange,
         });
         setLastTake({ kind: 'mic', name: take.title, blob: wav });
         setTakesVersion((v) => v + 1);
-        notify(`录音完成 ${res.durationSec.toFixed(1)}s，已存入录音库（可导出 MP3）`);
+        notify(`麦克风录音完成 ${res.durationSec.toFixed(1)}s，已存入内录/录音中心`);
       }
       return;
     }
@@ -311,32 +356,100 @@ export default function App() {
       recTimerRef.current = window.setInterval(() => setRecSeconds((v) => v + 1), 1000);
       await ensureRunning(audioContext());
       playerRef.current?.play();
-      notify('正在录音（同时播放曲谱）');
+      notify('正在麦克风录音（同时播放曲谱）');
     } catch (err) {
       notify(`录音失败：${(err as Error).message}`);
     }
   }, [micRecording, notify, doc]);
 
-  const recordInternal = useCallback(async () => {
+  /** 实时内录（支持应用内实时内录 / 内录+麦克风混录 / 系统级跨应用内录，同步进行实时音高检测） */
+  const toggleLiveInternalRecord = useCallback(
+    async (mode: InternalCaptureMode) => {
+      if (liveInternalRecording) {
+        const res = await internalRecRef.current?.stop();
+        internalRecRef.current = null;
+        setLiveInternalRecording(false);
+        setRecSeconds(0);
+        if (recTimerRef.current) {
+          window.clearInterval(recTimerRef.current);
+          recTimerRef.current = null;
+        }
+        playerRef.current?.pause();
+        if (res && res.samples.length > 0) {
+          const kind: TakeKind =
+            mode === 'system-loopback' ? 'system' : mode === 'mix-live' ? 'mixed' : 'internal';
+          const modeLabel =
+            mode === 'system-loopback' ? '系统内录' : mode === 'mix-live' ? '内录+麦混录' : '实时内录';
+          const summary = await analyzeAudioPitchContour(res.wavBlob, 180).catch(() => null);
+          const pitchRange = summary && summary.minNote !== '—' ? `${summary.minNote} ~ ${summary.maxNote}` : undefined;
+          const take = await addTake({
+            title: `${doc?.title ?? '曲目'} · ${modeLabel} ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`,
+            kind,
+            blob: res.wavBlob,
+            durationSec: res.durationSec,
+            scoreId: doc?.id,
+            scoreTitle: doc?.title,
+            pitchRange,
+          });
+          setLastTake({ kind, name: take.title, blob: res.wavBlob });
+          setTakesVersion((v) => v + 1);
+          notify(
+            `${modeLabel}完成 ${res.durationSec.toFixed(1)}s${pitchRange ? `（音域 ${pitchRange}）` : ''}，可在「录音」页查看音高曲线与导出 MP3`,
+          );
+        }
+        return;
+      }
+
+      try {
+        const rec = new LiveInternalRecorder();
+        await rec.start(mode, (chunk, sr) => {
+          detectorRef.current?.feedPcmSamples(chunk, sr);
+        });
+        internalRecRef.current = rec;
+        setLiveInternalRecording(true);
+        setRecSeconds(0);
+        recTimerRef.current = window.setInterval(() => setRecSeconds((v) => v + 1), 1000);
+        await ensureRunning(audioContext());
+        if (mode === 'app-live' || mode === 'mix-live') {
+          void playerRef.current?.play();
+        }
+        notify(
+          mode === 'system-loopback'
+            ? '系统跨应用内录已启动：正在捕获系统音频并同步测算实时音高'
+            : mode === 'mix-live'
+              ? '内录伴奏 + 麦克风混录已启动：正在同步播放并录制'
+              : '应用实时内录已启动：正在录制内部合成器干净音源并同步测算音高',
+        );
+      } catch (err) {
+        notify(`内录启动失败：${(err as Error).message}`);
+      }
+    },
+    [liveInternalRecording, doc, notify],
+  );
+
+  const recordInternalOffline = useCallback(async () => {
     if (!timeline || !timeline.notes.length) {
-      notify('这份曲谱没有音符，无法内录（图片谱请用麦克风或系统内录）');
+      notify('当前曲谱尚未转为音符模式，请先点顶部「⚡ 精准转换为可滚动谱」或使用「实时内录」');
       return;
     }
     setInternalBusy(true);
     try {
       const events = notesWithTime(timeline);
       const blob = await renderTimelineToWav(events, timeline.totalSec, { name: doc?.title });
+      const summary = await analyzeAudioPitchContour(blob, 180).catch(() => null);
+      const pitchRange = summary && summary.minNote !== '—' ? `${summary.minNote} ~ ${summary.maxNote}` : undefined;
       const take = await addTake({
-        title: `${doc?.title ?? '曲目'} · 内录 ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`,
+        title: `${doc?.title ?? '曲目'} · 全曲内录 ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`,
         kind: 'internal',
         blob,
         durationSec: timeline.totalSec,
         scoreId: doc?.id,
         scoreTitle: doc?.title,
+        pitchRange,
       });
       setLastTake({ kind: 'internal', name: take.title, blob });
       setTakesVersion((v) => v + 1);
-      notify('内录完成（应用内音源离线渲染），已存入录音库');
+      notify(`全曲高速离线内录完成${pitchRange ? `（音域 ${pitchRange}）` : ''}，已存入内录库`);
     } catch (err) {
       notify(`内录失败：${(err as Error).message}`);
     } finally {
@@ -345,9 +458,9 @@ export default function App() {
   }, [timeline, doc, notify]);
 
   const saveTake = useCallback(
-    async (kind: 'mic' | 'internal') => {
+    async (kind: TakeKind) => {
       if (!lastTake) return;
-      const name = `${(doc?.title ?? 'guitarflow').replace(/[\\/:*?"<>|]/g, '_')}-${kind === 'internal' ? '内录' : '录音'}`;
+      const name = `${(doc?.title ?? 'guitarflow').replace(/[\\/:*?"<>|]/g, '_')}-${kind === 'mic' ? '录音' : '内录'}`;
       const saved = await saveBlob(`${name}.wav`, lastTake.blob);
       if (saved) notify(`已保存：${saved}`);
     },
@@ -355,11 +468,10 @@ export default function App() {
   );
 
   /* ---------------- 曲库操作 ---------------- */
-  /** 图片谱打点：把当前页的开始时间设为当前播放位置 */
   const tapPageStart = useCallback(async () => {
     if (!timeline || doc?.format !== 'image') return;
     const page = pos.beatIndex;
-    const starts = [...(doc.meta.pageStarts ?? timeline.beats.map((b, i) => i * 20))];
+    const starts = [...(doc.meta.pageStarts ?? timeline.beats.map((_b, i) => i * 20))];
     starts[page] = Number(pos.timeSec.toFixed(2));
     const next = { ...doc, meta: { ...doc.meta, pageStarts: starts }, updatedAt: Date.now() };
     setDoc(next);
@@ -429,7 +541,6 @@ export default function App() {
 
   const currentBeat = pos.beatIndex;
   const tempoBase = timeline?.tempo ?? 100;
-  const displayBpm = Math.round(tempoBase * rate);
 
   return (
     <div className="app">
@@ -447,13 +558,13 @@ export default function App() {
             <span>♪</span> 曲库
           </button>
           <button className={view === 'search' ? 'active' : ''} onClick={() => setView('search')}>
-            <span>⌕</span> 搜谱
+            <span>⌕</span> 免费搜谱
           </button>
           <button className={view === 'import' ? 'active' : ''} onClick={() => setView('import')}>
-            <span>⤓</span> 导入
+            <span>⤓</span> 识谱导入
           </button>
           <button className={view === 'takes' ? 'active' : ''} onClick={() => setView('takes')}>
-            <span>⏺</span> 录音
+            <span>⏺</span> 内录/音高
           </button>
           <button className={view === 'settings' ? 'active' : ''} onClick={() => setView('settings')}>
             <span>⚙</span> 设置
@@ -461,7 +572,7 @@ export default function App() {
         </nav>
 
         <div className="sidebar-list">
-          <div className="sidebar-title">最近</div>
+          <div className="sidebar-title">最近打开</div>
           {docs.slice(0, 10).map((d) => (
             <button
               key={d.id}
@@ -477,7 +588,7 @@ export default function App() {
 
         <div className="sidebar-foot">
           <span className="pill">{isElectron ? '桌面版' : 'Web/移动'}</span>
-          <span className="muted small">v1.0.0</span>
+          <span className="muted small">v1.1.0</span>
         </div>
       </aside>
 
@@ -523,7 +634,7 @@ export default function App() {
           <ImportPage
             onSaved={(id) => {
               void refreshLibrary();
-              setActiveId(id);
+              void openDoc(id);
             }}
             onNotify={notify}
           />
@@ -568,9 +679,8 @@ export default function App() {
             <div className="panel">
               <h3>关于</h3>
               <p className="muted small">
-                GuitarFlow 1.0 · 跨平台（Windows / Android / iOS）。谱面渲染基于 alphaTab，音频与音高检测为自研实现。
+                GuitarFlow 1.1 · 跨平台（Windows / Android / iOS）。支持免费多源搜谱、PDF/JPG/PNG 高精度六线谱识别转可滚动曲谱，以及《音高》同款多源内录与音高曲线分析。
               </p>
-              <p className="muted small">快捷键：空格播放/暂停 · ←/→ 前后一个音符 · 点击谱面跳转。</p>
             </div>
           </div>
         )}
@@ -587,16 +697,43 @@ export default function App() {
                   <div className="muted small">
                     {doc.artist || '未知艺人'}
                     {doc.meta.bpm ? ` · ${Math.round(doc.meta.bpm)} BPM` : ''}
+                    {doc.meta.chords?.length ? ` · 和弦 ${doc.meta.chords.slice(0, 6).join('-')}` : ''}
                     {` · ${doc.sourceName}`}
                   </div>
                 </div>
                 <div className="head-actions">
-                  <button className={`btn tiny ${doc.favorite ? 'primary' : 'ghost'}`} onClick={() => void favDoc(doc.id)}>
+                  <button
+                    className={`btn tiny ${doc.favorite ? 'primary' : 'ghost'}`}
+                    onClick={() => void favDoc(doc.id)}
+                  >
                     ★
                   </button>
                   {doc.format === 'image' && (
-                    <button className="btn tiny ghost" onClick={() => void tapPageStart()} title="把当前页的开始时间绑定到当前播放位置">
-                      打点同步
+                    <>
+                      <button
+                        className="btn tiny primary"
+                        disabled={convertingOmr}
+                        onClick={() => void upgradeImageDocToScrollable()}
+                        title="用高精度 OMR 引擎将该图片谱转换为可滚动、可发声的六线谱"
+                      >
+                        {convertingOmr ? '识谱转换中…' : '⚡ 精准转换为可滚动谱'}
+                      </button>
+                      <button
+                        className="btn tiny ghost"
+                        onClick={() => void tapPageStart()}
+                        title="把当前页的开始时间绑定到当前播放位置"
+                      >
+                        打点同步
+                      </button>
+                    </>
+                  )}
+                  {doc.format !== 'image' && doc.pages && doc.pages.length > 0 && (
+                    <button
+                      className="btn tiny ghost"
+                      onClick={() => setShowOriginalPages((v) => !v)}
+                      title="在可滚动交互六线谱与原始导入的 PDF/图片谱之间切换"
+                    >
+                      {showOriginalPages ? '🎵 切回可滚动六线谱' : `👁 查看原谱图 (${doc.pages.length}页)`}
                     </button>
                   )}
                   {pos.state !== 'idle' && <span className="pill live">播放中</span>}
@@ -604,12 +741,14 @@ export default function App() {
               </header>
 
               <div className="score-body">
-                {doc.format === 'image' ? (
+                {doc.format === 'image' || showOriginalPages ? (
                   <ImageScoreView
                     doc={doc}
-                    pageIndex={currentBeat}
+                    pageIndex={doc.format === 'image' ? currentBeat : 0}
                     autoScroll={autoScroll}
-                    onPageChange={(i) => seekBeat(i)}
+                    onPageChange={(i) => {
+                      if (doc.format === 'image') seekBeat(i);
+                    }}
                   />
                 ) : (
                   <ScoreViewer
@@ -645,7 +784,11 @@ export default function App() {
                 onMetronome={setMetronome}
                 onAutoScroll={setAutoScroll}
                 onFollow={toggleFollow}
-                pitch={{ note: frame?.note ?? '', cents: frame?.cents ?? 0, active: listening }}
+                pitch={{
+                  note: frame?.note ?? '',
+                  cents: frame?.cents ?? 0,
+                  active: listening || liveInternalRecording,
+                }}
               />
             </div>
 
@@ -658,12 +801,14 @@ export default function App() {
                 recent={recent}
                 onToggleListen={() => void toggleListen()}
                 onRecordMic={() => void toggleMicRecord()}
-                onRecordInternal={() => void recordInternal()}
+                onRecordInternalOffline={() => void recordInternalOffline()}
+                onToggleLiveInternal={(m) => void toggleLiveInternalRecord(m)}
                 micRecording={micRecording}
+                liveInternalRecording={liveInternalRecording}
+                internalMode={internalMode}
+                onChangeInternalMode={setInternalMode}
                 recordSeconds={recSeconds}
                 renderingInternal={internalBusy}
-                systemCaptureSupported={isElectron}
-                onRecordSystem={() => notify('系统内录：请在弹窗中选择「整个屏幕」并勾选共享音频')}
                 lastTake={lastTake ? { kind: lastTake.kind, name: lastTake.name } : null}
                 onSaveLast={(kind) => void saveTake(kind)}
               />

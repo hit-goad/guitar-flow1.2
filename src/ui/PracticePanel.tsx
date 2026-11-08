@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { PitchFrame } from '../audio/pitch';
+import type { InternalCaptureMode } from '../audio/internalRecorder';
+import type { TakeKind } from '../core/library';
 import { midiToName } from '../core/types';
 
 export interface PracticeStats {
@@ -16,14 +18,16 @@ interface Props {
   recent: Array<{ midi: number; ts: number }>;
   onToggleListen(): void;
   onRecordMic(): void;
-  onRecordInternal(): void;
+  onRecordInternalOffline(): void;
+  onToggleLiveInternal(mode: InternalCaptureMode): void;
   micRecording: boolean;
+  liveInternalRecording: boolean;
+  internalMode: InternalCaptureMode;
+  onChangeInternalMode(mode: InternalCaptureMode): void;
   recordSeconds?: number;
   renderingInternal: boolean;
-  systemCaptureSupported: boolean;
-  onRecordSystem?(): void;
-  onSaveLast?(kind: 'mic' | 'internal'): void;
-  lastTake: { kind: 'mic' | 'internal'; name: string } | null;
+  onSaveLast?(kind: TakeKind): void;
+  lastTake: { kind: TakeKind; name: string } | null;
 }
 
 export function PracticePanel(props: Props) {
@@ -35,7 +39,7 @@ export function PracticePanel(props: Props) {
     setLevel(frame?.rms ?? 0);
   }, [frame]);
 
-  // 音高卷轴：把最近弹的音画成横向小条
+  // 音高卷轴：把最近弹奏或内录检测到的音画成横向轨迹
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -68,11 +72,24 @@ export function PracticePanel(props: Props) {
       ctx.fillText(midiToName(m), 2, y - 2);
     }
 
+    if (recent.length > 1) {
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(255,196,64,.45)';
+      ctx.lineWidth = 1.5;
+      recent.forEach((r, i) => {
+        const x = (i / Math.max(1, recent.length - 1)) * (w - 10) + 4;
+        const y = h - ((r.midi - min) / span) * (h - 8) - 4;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    }
+
     recent.forEach((r, i) => {
       const x = (i / Math.max(1, recent.length - 1)) * (w - 10) + 4;
       const y = h - ((r.midi - min) / span) * (h - 8) - 4;
       const isExpected = stats.expected.includes(r.midi);
-      ctx.fillStyle = isExpected ? '#ffc440' : 'rgba(120,200,255,.75)';
+      ctx.fillStyle = isExpected ? '#ffc440' : 'rgba(120,200,255,.85)';
       ctx.beginPath();
       ctx.arc(x, y, rowH / 2.6 + 1.6, 0, Math.PI * 2);
       ctx.fill();
@@ -87,10 +104,14 @@ export function PracticePanel(props: Props) {
   return (
     <div className="practice">
       <div className="practice-head">
-        <span className={`pill ${listening ? 'live' : ''}`}>{listening ? '麦克风监听中' : '麦克风未开启'}</span>
+        <span className={`pill ${listening || props.liveInternalRecording ? 'live' : ''}`}>
+          {props.liveInternalRecording ? '内录测音高中' : listening ? '实时监听中' : '监听未开启'}
+        </span>
         {follow && <span className="pill accent">跟我弹</span>}
         <span className="spacer" />
-        <span className="acc">命中 {stats.hits} · 漏 {stats.misses}</span>
+        <span className="acc">
+          命中 {stats.hits} · 漏 {stats.misses}
+        </span>
       </div>
 
       <div className="tuner">
@@ -105,7 +126,11 @@ export function PracticePanel(props: Props) {
           </div>
           <div className="cents-labels">
             <span>♭</span>
-            <span>{frame && frame.hz > 0 ? `${frame.cents > 0 ? '+' : ''}${frame.cents.toFixed(0)}¢` : '调音'}</span>
+            <span>
+              {frame && frame.hz > 0
+                ? `${frame.hz.toFixed(1)}Hz (${frame.cents > 0 ? '+' : ''}${frame.cents.toFixed(0)}¢)`
+                : '音高检测'}
+            </span>
             <span>♯</span>
           </div>
         </div>
@@ -123,22 +148,52 @@ export function PracticePanel(props: Props) {
 
       <div className="practice-actions">
         <button className={`btn ${listening ? 'danger' : 'primary'}`} onClick={props.onToggleListen}>
-          {listening ? '停止监听' : '开启实时检测'}
+          {listening ? '停止实时音高检测' : '开启实时音高检测'}
         </button>
-        <button className={`btn ${props.micRecording ? 'danger' : ''}`} onClick={props.onRecordMic}>
-          {props.micRecording ? `停止录音 ${props.recordSeconds ?? 0}s` : '麦克风录音'}
-        </button>
-        <button className="btn" onClick={props.onRecordInternal} disabled={props.renderingInternal}>
-          {props.renderingInternal ? '内录中…' : '内录当前曲目'}
-        </button>
-        {props.systemCaptureSupported && props.onRecordSystem && (
-          <button className="btn ghost" onClick={props.onRecordSystem}>
-            系统内录
+
+        <div className="internal-rec-box" style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
+          <label className="muted small" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+            <span>内录音源模式：</span>
+            <select
+              value={props.internalMode}
+              disabled={props.liveInternalRecording}
+              onChange={(e) => props.onChangeInternalMode(e.target.value as InternalCaptureMode)}
+              style={{
+                background: 'rgba(255,255,255,0.06)',
+                color: 'inherit',
+                border: '1px solid var(--line)',
+                borderRadius: 6,
+                padding: '3px 6px',
+                fontSize: 12,
+              }}
+            >
+              <option value="app-live">应用实时内录（零杂音）</option>
+              <option value="mix-live">内录伴奏 + 麦克风同录</option>
+              <option value="system-loopback">系统跨应用内录（同步测音高）</option>
+            </select>
+          </label>
+
+          <button
+            className={`btn ${props.liveInternalRecording ? 'danger' : 'primary'}`}
+            onClick={() => props.onToggleLiveInternal(props.internalMode)}
+          >
+            {props.liveInternalRecording
+              ? `■ 停止实时内录 (${props.recordSeconds ?? 0}s)`
+              : '⏺ 启动实时内录（同步测音高）'}
           </button>
-        )}
+        </div>
+
+        <button className="btn" onClick={props.onRecordInternalOffline} disabled={props.renderingInternal}>
+          {props.renderingInternal ? '渲染内录中…' : '⚡ 全曲高速离线内录 (WAV/MP3)'}
+        </button>
+
+        <button className={`btn ${props.micRecording ? 'danger' : ''}`} onClick={props.onRecordMic}>
+          {props.micRecording ? `■ 停止麦克风录音 (${props.recordSeconds ?? 0}s)` : '🎙 仅麦克风录音'}
+        </button>
+
         {props.lastTake && props.onSaveLast && (
           <button className="btn ghost" onClick={() => props.onSaveLast!(props.lastTake!.kind)}>
-            保存 {props.lastTake.name}
+            导出最新：{props.lastTake.name}
           </button>
         )}
       </div>

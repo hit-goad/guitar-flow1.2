@@ -23,6 +23,12 @@ export interface ScoreMeta {
   pageStarts?: number[];
   noteCount?: number;
   durationSec?: number;
+  /** 图片/PDF 识谱得到的 ASCII 六线谱原文（便于二次校对与重生成） */
+  omrAscii?: string;
+  /** 识别到的和弦序列 */
+  chords?: string[];
+  /** 识谱置信度 0..1 */
+  omrConfidence?: number;
 }
 
 export interface ScoreDoc {
@@ -35,7 +41,7 @@ export interface ScoreDoc {
   text?: string;
   /** 二进制载荷：GP、MusicXML、MIDI */
   bytes?: ArrayBuffer;
-  /** 图片谱页（扫描件、PDF 渲染页、截图） */
+  /** 图片谱页（扫描件、PDF 渲染页、截图；当已转成 alphatex 时可同时保留以便原谱对照） */
   pages?: Blob[];
   meta: ScoreMeta;
   sourceId: string;
@@ -75,7 +81,7 @@ export interface SearchHit {
 export interface Provider {
   id: string;
   name: string;
-  /** 该源是否需要 cookie / 会员 / 破解路径 */
+  /** 来源说明 */
   note?: string;
   gated?: boolean;
   enabled?: boolean;

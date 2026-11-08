@@ -2,6 +2,7 @@
  * 吉他合成器：Karplus–Strong 物理建模拨弦。
  * 每个音符都按真实弦长/品位的基频渲染，因此「每到一个音符就有对应的音高」，
  * 不依赖 soundfont，安装包也小。
+ * 同时暴露 master 输出节点，支持实时应用内录（Live App Internal Recording）直接抓取合成器总线信号。
  */
 export interface PluckOptions {
   velocity?: number;
@@ -20,7 +21,6 @@ export class GuitarSynth {
   private master: GainNode;
   private comp: DynamicsCompressorNode;
   private cache = new Map<number, AudioBuffer>();
-  private samplesPerRamp = 0;
 
   constructor(ctx: BaseAudioContext) {
     this.ctx = ctx;
@@ -34,6 +34,11 @@ export class GuitarSynth {
     this.comp.release.value = 0.22;
     this.master.connect(this.comp);
     this.comp.connect(ctx.destination);
+  }
+
+  /** 暴露压缩后主输出节点，供实时内录器（MediaStreamDestination / PCM Tap）直接挂接 */
+  get outputNode(): AudioNode {
+    return this.comp;
   }
 
   setVolume(v: number) {
@@ -52,17 +57,14 @@ export class GuitarSynth {
     const buf = this.ctx.createBuffer(1, len, sr);
     const out = buf.getChannelData(0);
 
-    // 延迟线长度 = 一个周期，至少 2 个采样
     const n = Math.max(2, Math.round(sr / freq));
     const delay = new Float32Array(n);
-    // 拨片激励：低通白噪 + 轻微位置梳状
     let prev = 0;
     for (let i = 0; i < n; i++) {
       const white = Math.random() * 2 - 1;
       prev = 0.62 * prev + 0.38 * white;
       delay[i] = prev;
     }
-    // 高频衰减系数：音越高衰减越快，模拟真实琴弦
     const rho = Math.min(0.9995, Math.max(0.988, 1 - freq / 22000));
     let idx = 0;
     let peak = 0;
@@ -74,7 +76,6 @@ export class GuitarSynth {
       if (Math.abs(cur) > peak) peak = Math.abs(cur);
       idx = (idx + 1) % n;
     }
-    // 归一化 + 尾部淡出，避免爆音
     const gain = peak > 1e-4 ? 0.82 / peak : 1;
     const tailStart = Math.floor(len * 0.82);
     for (let i = 0; i < len; i++) {
@@ -117,7 +118,6 @@ export class GuitarSynth {
       gain.connect(panner);
       node = panner;
     }
-    // 低音弦加一点箱体共鸣
     if (midi < 52) {
       const shelf = this.ctx.createBiquadFilter();
       shelf.type = 'peaking';

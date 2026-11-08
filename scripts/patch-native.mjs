@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 在 `npx cap add android/ios` 之后补齐原生权限与配置。
+ * 在 `npx cap add android/ios` 之后补齐原生权限与内录配置。
  * 幂等：重复运行不会重复插入。
  */
 import { readFile, writeFile, access } from 'node:fs/promises';
@@ -29,6 +29,9 @@ async function patchAndroid() {
     'android.permission.INTERNET',
     'android.permission.RECORD_AUDIO',
     'android.permission.MODIFY_AUDIO_SETTINGS',
+    'android.permission.FOREGROUND_SERVICE',
+    'android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION',
+    'android.permission.FOREGROUND_SERVICE_MICROPHONE',
   ];
   let added = [];
   for (const p of perms) {
@@ -43,10 +46,12 @@ async function patchAndroid() {
   if (!xml.includes('android:usesCleartextTraffic')) {
     xml = xml.replace(/<application([^>]*)>/, '<application$1\n        android:usesCleartextTraffic="true">');
   }
+  if (!xml.includes('android:allowAudioPlaybackCapture')) {
+    xml = xml.replace(/<application([^>]*)>/, '<application$1\n        android:allowAudioPlaybackCapture="true">');
+  }
   await writeFile(manifestPath, xml);
-  console.log(`[patch-native] Android 权限已补齐：${added.join(', ') || '无需变更'}`);
+  console.log(`[patch-native] Android 权限与内录配置已补齐：${added.join(', ') || '无需变更'}`);
 
-  // 允许 http 明文（部分谱站镜像没有 https）
   const netConfig = join(root, 'android', 'app', 'src', 'main', 'res', 'xml', 'network_security_config.xml');
   if (!(await exists(netConfig))) {
     await writeFile(
@@ -73,7 +78,7 @@ async function patchIos() {
   }
   let plist = await readFile(plistPath, 'utf8');
   const entries = [
-    ['NSMicrophoneUsageDescription', 'GuitarFlow 需要麦克风来实时检测你弹奏的音高。'],
+    ['NSMicrophoneUsageDescription', 'GuitarFlow 需要麦克风与音频权限来进行内录与实时音高检测。'],
     ['UIFileSharingEnabled', null],
     ['LSSupportsOpeningDocumentsInPlace', null],
   ];

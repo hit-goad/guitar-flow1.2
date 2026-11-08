@@ -4,10 +4,12 @@ import type { ScoreDoc } from './types';
 const DB_NAME = 'guitarflow';
 const DB_VERSION = 2;
 
+export type TakeKind = 'mic' | 'internal' | 'system' | 'mixed';
+
 export interface TakeRecord {
   id: string;
   title: string;
-  kind: 'mic' | 'internal';
+  kind: TakeKind;
   blob: Blob;
   mime: string;
   durationSec: number;
@@ -15,6 +17,8 @@ export interface TakeRecord {
   createdAt: number;
   scoreId?: string;
   scoreTitle?: string;
+  /** 最低音 ~ 最高音（如 E2 ~ E5），对齐《音高》App 的音域统计 */
+  pitchRange?: string;
 }
 
 interface GFDB {

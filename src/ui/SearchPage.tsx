@@ -1,8 +1,13 @@
 import { useEffect, useState } from 'react';
 import type { SearchHit } from '../core/types';
-import { loadHit, providerStatus, searchAll } from '../sources';
+import { clearSearchCache, loadHit, providerStatus, searchAll } from '../sources';
 import { putScore } from '../core/library';
-import { setProviderConfig, providerConfig } from '../sources/base';
+import {
+  autoConvertOnlineImageScores,
+  providerConfig,
+  setAutoConvertOnlineImageScores,
+  setProviderConfig,
+} from '../sources/base';
 
 interface Props {
   onSaved(docId: string): void;
@@ -16,8 +21,9 @@ export function SearchPage({ onSaved, onNotify }: Props) {
   const [busy, setBusy] = useState(false);
   const [loadingId, setLoadingId] = useState<string | null>(null);
   const [providers, setProviders] = useState(providerStatus());
-  const [gwCookie, setGwCookie] = useState(providerConfig.guitarworld?.cookie ?? '');
   const [ghRepo, setGhRepo] = useState(providerConfig.chordproGithub?.baseUrl ?? '');
+  const [autoOmr, setAutoOmr] = useState(autoConvertOnlineImageScores);
+  const [filterSource, setFilterSource] = useState<string>('all');
   const [showSources, setShowSources] = useState(false);
 
   useEffect(() => {
@@ -57,15 +63,19 @@ export function SearchPage({ onSaved, onNotify }: Props) {
     }
   };
 
+  const visibleHits = filterSource === 'all' ? hits : hits.filter((h) => h.providerId === filterSource);
+
   return (
     <div className="page search-page">
       <header className="page-head">
         <div>
-          <h1>在线搜谱</h1>
-          <p className="muted">聚合免费谱源；来源返回的文本谱会自动转成可滚动、可发声的六线谱</p>
+          <h1>在线免费搜谱</h1>
+          <p className="muted">
+            已彻底移除付费谱源；聚合吉他屋(jita5)、吉他之家(798com)、17吉他网、虫虫吉他、吉他社、爱曲谱网、吉他网免费区与 Ultimate Guitar，导入时自动识别为可滚动曲谱
+          </p>
         </div>
         <button className="btn ghost" onClick={() => setShowSources((v) => !v)}>
-          谱源设置
+          免费谱源管理 ({providers.filter((p) => p.enabled).length}/{providers.length})
         </button>
       </header>
 
@@ -78,18 +88,54 @@ export function SearchPage({ onSaved, onNotify }: Props) {
       >
         <input
           className="input big"
-          placeholder="输入歌名或歌手，例如：Wonderwall / 晴天"
+          placeholder="输入歌名或歌手搜索免费吉他谱，例如：晴天 / 成都 / Amani / 500 miles / Wonderwall"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
         <button className="btn primary" type="submit" disabled={busy}>
-          {busy ? '搜索中…' : '搜索'}
+          {busy ? '搜索中…' : '全网免费搜谱'}
         </button>
       </form>
 
+      <div className="row" style={{ marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+        <label className="chip toggle on" style={{ cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={autoOmr}
+            onChange={(e) => {
+              setAutoOmr(e.target.checked);
+              setAutoConvertOnlineImageScores(e.target.checked);
+            }}
+          />
+          导入图片谱时自动 OMR 识别并转换为可滚动六线谱
+        </label>
+        <button
+          type="button"
+          className={`btn tiny ${filterSource === 'all' ? 'primary' : 'ghost'}`}
+          onClick={() => setFilterSource('all')}
+        >
+          全部来源 ({hits.length})
+        </button>
+        {providers
+          .filter((p) => p.enabled)
+          .map((p) => {
+            const cnt = hits.filter((h) => h.providerId === p.id).length;
+            return (
+              <button
+                key={p.id}
+                type="button"
+                className={`btn tiny ${filterSource === p.id ? 'primary' : 'ghost'}`}
+                onClick={() => setFilterSource(p.id)}
+              >
+                {p.name.split(' ')[0]} {cnt ? `(${cnt})` : ''}
+              </button>
+            );
+          })}
+      </div>
+
       {showSources && (
         <div className="panel">
-          <h3>谱源</h3>
+          <h3>免费谱源开关</h3>
           <div className="source-list">
             {providers.map((p) => (
               <label key={p.id} className="source-row">
@@ -98,6 +144,7 @@ export function SearchPage({ onSaved, onNotify }: Props) {
                   checked={p.enabled}
                   onChange={(e) => {
                     setProviderConfig(p.id, { enabled: e.target.checked });
+                    clearSearchCache();
                     setProviders(providerStatus());
                   }}
                 />
@@ -108,25 +155,18 @@ export function SearchPage({ onSaved, onNotify }: Props) {
               </label>
             ))}
           </div>
-          <div className="field-grid">
+          <div className="field-grid" style={{ marginTop: 12 }}>
             <label>
-              <span>吉他世界 Cookie（已购/登录后可用）</span>
-              <input
-                className="input"
-                value={gwCookie}
-                placeholder="PHPSESSID=...; token=..."
-                onChange={(e) => setGwCookie(e.target.value)}
-                onBlur={() => setProviderConfig('guitarworld', { cookie: gwCookie.trim() })}
-              />
-            </label>
-            <label>
-              <span>ChordPro 曲库仓库（owner/repo）</span>
+              <span>GitHub 开源曲谱库仓库（owner/repo，可选）</span>
               <input
                 className="input"
                 value={ghRepo}
-                placeholder="例如 your-name/songbook"
+                placeholder="例如 your-name/guitar-songbook"
                 onChange={(e) => setGhRepo(e.target.value)}
-                onBlur={() => setProviderConfig('chordproGithub', { baseUrl: ghRepo.trim() })}
+                onBlur={() => {
+                  setProviderConfig('chordproGithub', { baseUrl: ghRepo.trim() });
+                  clearSearchCache();
+                }}
               />
             </label>
           </div>
@@ -144,14 +184,14 @@ export function SearchPage({ onSaved, onNotify }: Props) {
       )}
 
       <div className="result-list">
-        {hits.map((hit) => {
+        {visibleHits.map((hit) => {
           const key = `${hit.providerId}:${hit.id}`;
           return (
             <div className="result-row" key={key}>
               <div className="result-main">
                 <div className="result-title">
                   {hit.title}
-                  {hit.gated && <span className="tag warn">需会员/图片谱</span>}
+                  <span className="tag subtle">免费</span>
                 </div>
                 <div className="muted small">
                   {hit.artist || '未知艺人'} · {hit.sourceName}
@@ -165,7 +205,7 @@ export function SearchPage({ onSaved, onNotify }: Props) {
                   </a>
                 )}
                 <button className="btn tiny primary" onClick={() => void importHit(hit)} disabled={loadingId === key}>
-                  {loadingId === key ? '导入中…' : '导入'}
+                  {loadingId === key ? '识谱导入中…' : '导入并转可滚动谱'}
                 </button>
               </div>
             </div>
@@ -173,7 +213,9 @@ export function SearchPage({ onSaved, onNotify }: Props) {
         })}
       </div>
 
-      {!busy && !hits.length && query && <p className="muted center">没有找到结果，换个关键词或检查谱源设置</p>}
+      {!busy && !visibleHits.length && query && (
+        <p className="muted center">没有找到匹配结果，可尝试简化关键词（只填歌名）或切换谱源筛选</p>
+      )}
     </div>
   );
 }

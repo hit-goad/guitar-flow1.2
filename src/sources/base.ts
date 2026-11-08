@@ -48,9 +48,9 @@ export function extractAnchors(
   let m: RegExpExecArray | null;
   while ((m = re.exec(html))) {
     if (!pattern.test(m[1])) continue;
-    const text = stripTags(m[2]);
-    if (!text) continue;
-    out.push({ href: m[1], text });
+    const text = stripTags(m[2]) || (/title=["']([^"']+)["']/i.exec(m[0])?.[1] ?? '') || (/alt=["']([^"']+)["']/i.exec(m[2])?.[1] ?? '');
+    if (!text.trim()) continue;
+    out.push({ href: m[1], text: text.trim() });
   }
   return out;
 }
@@ -76,19 +76,29 @@ export async function safely<T>(fn: () => Promise<T>, fallback: T, label: string
 
 export interface ProviderConfig {
   enabled: boolean;
-  cookie?: string;
-  /** 部分源需要自建反代或镜像域名 */
+  /** 部分源可自定义镜像域名或开源仓库路径 */
   baseUrl?: string;
 }
 
+/** 全部为免费谱源，已彻底移除付费/VIP 谱源 */
 export const providerConfig: Record<string, ProviderConfig> = {
   jita5: { enabled: true },
   c798: { enabled: true },
-  ultimateGuitar: { enabled: true },
-  jitapu91: { enabled: true },
   jita17: { enabled: true },
+  ccguitar: { enabled: true },
+  jitashe: { enabled: true },
+  qupu2: { enabled: true },
+  jitaCom: { enabled: true },
+  ultimateGuitar: { enabled: true },
   chordproGithub: { enabled: true },
 };
+
+/** 在线导入图片谱时是否自动通过 OMR 识别并转换为可滚动六线谱 */
+export let autoConvertOnlineImageScores = true;
+
+export function setAutoConvertOnlineImageScores(val: boolean) {
+  autoConvertOnlineImageScores = val;
+}
 
 export function setProviderConfig(id: string, patch: Partial<ProviderConfig>) {
   providerConfig[id] = { ...(providerConfig[id] ?? { enabled: true }), ...patch };
