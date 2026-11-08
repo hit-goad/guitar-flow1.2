@@ -16,12 +16,14 @@
     "assets": "node scripts/copy-assets.mjs",
     "test": "vitest run",
     "electron:dev": "concurrently -k \"vite\" \"wait-on http://127.0.0.1:5173 && electron .\"",
-    "electron:build": "npm run build && electron-builder --win nsis portable --publish never",
+    "electron:build": "npm run icon && npm run build && electron-builder --win nsis portable --publish never",
     "cap:sync": "npm run build && cap sync",
     "cap:add:android": "cap add android",
     "cap:add:ios": "cap add ios",
     "android:build": "npm run build && cap sync android",
-    "ios:build": "npm run build && cap sync ios"
+    "ios:build": "npm run build && cap sync ios",
+    "icon": "node scripts/make-icon.mjs",
+    "publish:github": "node scripts/publish-github.mjs"
   },
   "dependencies": {
     "@coderline/alphatab": "1.9.0",

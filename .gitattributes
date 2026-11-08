@@ -1,0 +1,18 @@
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.otf binary
+*.sf2 binary
+*.sf3 binary
+*.exe binary
+*.ipa binary
+*.apk binary
+
+package-lock.json linguist-generated=true
+dist/** linguist-generated=true
+public/font/** linguist-vendored=true
+public/soundfont/** linguist-vendored=true

@@ -1,0 +1,143 @@
+name: 打包三端
+
+# 推送 main 会自动构建 Windows + Android；打 v* 标签或手动运行还会构建 iOS 并把产物挂到 Release。
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows 安装包
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: npx electron-builder --win nsis portable --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: 收集产物
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          Copy-Item release\*.exe artifacts\
+      - uses: actions/upload-artifact@v4
+        with:
+          name: guitarflow-windows
+          path: artifacts/*
+          if-no-files-found: warn
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: artifacts/*
+          fail_on_unmatched_files: false
+
+  android:
+    name: Android 安装包
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - name: 生成 Android 工程并补权限
+        run: |
+          if [ ! -d android ]; then npx cap add android; fi
+          npx cap sync android
+          node scripts/patch-native.mjs
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - name: 构建 APK / AAB
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+          if [ -n "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" ]; then
+            echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > app/release.keystore
+            ./gradlew bundleRelease \
+              -Pandroid.injected.signing.store.file=$PWD/app/release.keystore \
+              -Pandroid.injected.signing.store.password=${{ secrets.ANDROID_KEYSTORE_PASSWORD }} \
+              -Pandroid.injected.signing.key.alias=${{ secrets.ANDROID_KEY_ALIAS }} \
+              -Pandroid.injected.signing.key.password=${{ secrets.ANDROID_KEY_PASSWORD }}
+          else
+            ./gradlew bundleRelease
+          fi
+      - name: 收集产物
+        run: |
+          mkdir -p artifacts
+          cp android/app/build/outputs/apk/debug/*.apk artifacts/ || true
+          cp android/app/build/outputs/bundle/release/*.aab artifacts/ || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: guitarflow-android
+          path: artifacts/*
+          if-no-files-found: warn
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: artifacts/*
+          fail_on_unmatched_files: false
+
+  ios:
+    name: iOS 安装包
+    runs-on: macos-15
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: 生成 iOS 工程并补 Info.plist
+        run: |
+          if [ ! -d ios ]; then npx cap add ios; fi
+          npx cap sync ios
+          node scripts/patch-native.mjs
+      - name: CocoaPods
+        working-directory: ios/App
+        run: pod install || pod install --repo-update
+      - name: 归档（无签名）
+        working-directory: ios/App
+        run: |
+          xcodebuild -workspace App.xcworkspace -scheme App \
+            -configuration Release -sdk iphoneos \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            archive
+      - name: 打包 IPA
+        run: |
+          mkdir -p Payload artifacts
+          cp -R "$RUNNER_TEMP/App.xcarchive/Products/Applications/App.app" Payload/
+          zip -r GuitarFlow-unsigned.ipa Payload
+          cp GuitarFlow-unsigned.ipa artifacts/
+          # 正式签名：补 CERT/PROFILE/TEAM_ID 后改用
+          # xcodebuild -exportArchive -archivePath App.xcarchive -exportOptionsPlist ExportOptions.plist -exportPath artifacts/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: guitarflow-ios
+          path: artifacts/*
+          if-no-files-found: warn
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: artifacts/*
+          fail_on_unmatched_files: false

@@ -14,3 +14,6 @@ tone-e2.wav
 
 # build outputs
 build/tmp
+
+# 本地打包产物
+*.zip

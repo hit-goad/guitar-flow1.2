@@ -54,6 +54,9 @@ npm run electron:dev
 
 ## 出安装包（GitHub Actions）
 
+> 第一次操作请照 [docs/GITHUB.md](docs/GITHUB.md) 一步步点：建仓 → 上传 → 等 Actions → 下载安装包。
+
+
 推送到 `main` 或打 `v*` 标签即可，三条流水线互不影响：
 
 | 流水线 | 产物 | 说明 |
