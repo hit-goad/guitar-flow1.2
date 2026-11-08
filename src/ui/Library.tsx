@@ -1,6 +1,15 @@
 import { useMemo, useState } from 'react';
 import type { ScoreDoc } from '../core/types';
 import { searchScores } from '../core/fuzzy';
+import {
+  docFromEntry,
+  filesForEntry,
+  localIndex,
+  pickFolder,
+  searchIndex,
+  type LibraryEntry,
+  type LocalFolder,
+} from '../core/localFolder';
 
 interface Props {
   docs: ScoreDoc[];
@@ -10,6 +19,9 @@ interface Props {
   onToggleFavorite(id: string): void;
   onImport(): void;
   onSearch(): void;
+  /** 本机曲库条目打开后交回 App 落库并打开 */
+  onOpenLocalDoc(doc: ScoreDoc): void;
+  onNotify(message: string): void;
 }
 
 const FORMAT_LABEL: Record<string, string> = {
@@ -23,14 +35,46 @@ const FORMAT_LABEL: Record<string, string> = {
   pdf: 'PDF',
 };
 
-export function Library({ docs, activeId, onOpen, onDelete, onToggleFavorite, onImport, onSearch }: Props) {
+export function Library(props: Props) {
+  const { docs, activeId, onOpen, onDelete, onToggleFavorite, onImport, onSearch, onOpenLocalDoc, onNotify } = props;
   const [query, setQuery] = useState('');
   const [onlyFav, setOnlyFav] = useState(false);
+  const [folder, setFolder] = useState<LocalFolder | null>(null);
+  const [localQuery, setLocalQuery] = useState('');
+  const [loadingEntry, setLoadingEntry] = useState<string | null>(null);
 
   const filtered = useMemo(
     () => searchScores(docs, query, { filter: onlyFav ? (d) => !!d.favorite : undefined, limit: 200 }),
     [docs, query, onlyFav],
   );
+  const localHits = useMemo(() => searchIndex(localQuery, 30), [localQuery]);
+
+  const chooseFolder = async () => {
+    const picked = await pickFolder();
+    if (picked) {
+      setFolder(picked);
+      onNotify(`已选中文件夹「${picked.name}」，共 ${picked.files.size} 个文件`);
+    }
+  };
+
+  const openLocal = async (entry: LibraryEntry) => {
+    if (!folder) {
+      onNotify('请先选择本机曲库文件夹');
+      return;
+    }
+    const files = filesForEntry(folder, entry);
+    if (!files.length) {
+      onNotify(`文件夹里没有找到《${entry.title}》的页图，可能文件名已变化`);
+      return;
+    }
+    setLoadingEntry(entry.id);
+    try {
+      const doc = await docFromEntry(entry, files);
+      onOpenLocalDoc(doc);
+    } finally {
+      setLoadingEntry(null);
+    }
+  };
 
   return (
     <div className="page library">
@@ -38,7 +82,7 @@ export function Library({ docs, activeId, onOpen, onDelete, onToggleFavorite, on
         <div>
           <h1>曲库</h1>
           <p className="muted">
-            {docs.length} 份曲谱 · 支持 Guitar Pro / MusicXML / MIDI / 六线谱文本 / 和弦谱 / PDF / 图片
+            {docs.length} 份曲谱 · 本机曲库索引 {localIndex.totalSongs} 首（{localIndex.totalFiles} 张谱图）
           </p>
         </div>
         <div className="head-actions">
@@ -68,19 +112,52 @@ export function Library({ docs, activeId, onOpen, onDelete, onToggleFavorite, on
         )}
       </div>
 
+      <div className="panel local-library">
+        <div className="local-head">
+          <div>
+            <h3>本机曲库 · {localIndex.totalSongs} 首</h3>
+            <p className="muted small">
+              {folder
+                ? `已连接「${folder.name}」（${folder.files.size} 个文件）· 点歌名即可载入页图并打开`
+                : '索引已内置；点「连接文件夹」选中存放谱图的目录，即可按需载入（不会整库复制，省空间）'}
+            </p>
+          </div>
+          <button className="btn" onClick={() => void chooseFolder()}>
+            {folder ? '重新选择文件夹' : '连接文件夹'}
+          </button>
+        </div>
+        <input
+          className="input"
+          placeholder="在本机曲库里搜：例如 晴天 / canon / 指弹"
+          value={localQuery}
+          onChange={(e) => setLocalQuery(e.target.value)}
+        />
+        <div className="local-list">
+          {localHits.map((entry) => (
+            <button
+              key={entry.id}
+              className="local-item"
+              onClick={() => void openLocal(entry)}
+              disabled={loadingEntry === entry.id}
+              title={entry.files.join(' / ')}
+            >
+              <span className="local-title">{entry.title}</span>
+              <span className="muted small">
+                {entry.artist ? `${entry.artist} · ` : ''}
+                {entry.pages} 页
+                {loadingEntry === entry.id ? ' · 载入中…' : ''}
+              </span>
+            </button>
+          ))}
+          {!localHits.length && <p className="muted small">没有匹配的曲目</p>}
+        </div>
+      </div>
+
       {!docs.length && (
         <div className="empty-state">
           <div className="empty-icon">🎸</div>
-          <h2>还没有曲谱</h2>
-          <p className="muted">导入本地文件、或从在线谱源搜索一首歌开始。</p>
-          <div className="row">
-            <button className="btn primary" onClick={onImport}>
-              导入文件
-            </button>
-            <button className="btn" onClick={onSearch}>
-              在线搜谱
-            </button>
-          </div>
+          <h2>还没有打开过曲谱</h2>
+          <p className="muted">从本机曲库点一首、导入文件，或在线搜谱。</p>
         </div>
       )}
 

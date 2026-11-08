@@ -18,6 +18,7 @@ interface Props {
   onRecordMic(): void;
   onRecordInternal(): void;
   micRecording: boolean;
+  recordSeconds?: number;
   renderingInternal: boolean;
   systemCaptureSupported: boolean;
   onRecordSystem?(): void;
@@ -125,7 +126,7 @@ export function PracticePanel(props: Props) {
           {listening ? '停止监听' : '开启实时检测'}
         </button>
         <button className={`btn ${props.micRecording ? 'danger' : ''}`} onClick={props.onRecordMic}>
-          {props.micRecording ? '停止录音' : '麦克风录音'}
+          {props.micRecording ? `停止录音 ${props.recordSeconds ?? 0}s` : '麦克风录音'}
         </button>
         <button className="btn" onClick={props.onRecordInternal} disabled={props.renderingInternal}>
           {props.renderingInternal ? '内录中…' : '内录当前曲目'}

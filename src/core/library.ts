@@ -2,11 +2,25 @@ import { openDB, type IDBPDatabase } from 'idb';
 import type { ScoreDoc } from './types';
 
 const DB_NAME = 'guitarflow';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
+
+export interface TakeRecord {
+  id: string;
+  title: string;
+  kind: 'mic' | 'internal';
+  blob: Blob;
+  mime: string;
+  durationSec: number;
+  size: number;
+  createdAt: number;
+  scoreId?: string;
+  scoreTitle?: string;
+}
 
 interface GFDB {
   scores: ScoreDoc;
   settings: { key: string; value: unknown };
+  takes: TakeRecord;
 }
 
 let dbPromise: Promise<IDBPDatabase<GFDB>> | null = null;
@@ -23,6 +37,9 @@ function db() {
         }
         if (!database.objectStoreNames.contains('settings')) {
           database.createObjectStore('settings', { keyPath: 'key' });
+        }
+        if (!database.objectStoreNames.contains('takes')) {
+          database.createObjectStore('takes', { keyPath: 'id' });
         }
       },
     });

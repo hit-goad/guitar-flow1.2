@@ -82,11 +82,11 @@ export interface ProviderConfig {
 }
 
 export const providerConfig: Record<string, ProviderConfig> = {
-  guitarworld: { enabled: true },
+  jita5: { enabled: true },
+  c798: { enabled: true },
   ultimateGuitar: { enabled: true },
   jitapu91: { enabled: true },
   jita17: { enabled: true },
-  songsterr: { enabled: true },
   chordproGithub: { enabled: true },
 };
 

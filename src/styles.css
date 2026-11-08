@@ -1254,3 +1254,131 @@ input[type='range'] {
     grid-template-columns: 1fr;
   }
 }
+/* ---------------- 本机曲库 ---------------- */
+.local-library {
+  margin-bottom: 18px;
+}
+
+.local-head {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.local-head h3 {
+  margin: 0 0 4px;
+}
+
+.local-head p {
+  margin: 0;
+  max-width: 720px;
+}
+
+.local-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 6px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.local-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 7px 10px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  min-width: 0;
+}
+
+.local-item:hover:not(:disabled) {
+  border-color: rgba(255, 196, 64, 0.4);
+  background: rgba(255, 196, 64, 0.08);
+}
+
+.local-item:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.local-title {
+  font-size: 13px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------------- 录音库 ---------------- */
+.take-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 980px;
+}
+
+.take-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: rgba(21, 26, 35, 0.72);
+}
+
+.take-row.playing {
+  border-color: rgba(255, 196, 64, 0.45);
+  box-shadow: 0 0 0 3px rgba(255, 196, 64, 0.1);
+}
+
+.take-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.take-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  margin-bottom: 2px;
+}
+
+.take-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* ---------------- 识谱 ---------------- */
+.omr-panel {
+  margin-bottom: 16px;
+}
+
+.omr-meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 900px) {
+  .take-row {
+    flex-wrap: wrap;
+  }
+  .take-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+  .local-head {
+    flex-direction: column;
+  }
+}

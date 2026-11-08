@@ -7,7 +7,10 @@ import { applyPageStarts, buildImageTimeline } from './score/imageTimeline';
 import { FollowController } from './score/follow';
 import { ScorePlayer, type PlayerSnapshot } from './audio/player';
 import { PitchDetector, type PitchFrame } from './audio/pitch';
-import { MicRecorder, renderTimelineToWav, saveRecording } from './audio/recorder';
+import { renderTimelineToWav } from './audio/recorder';
+import { PcmRecorder, samplesToWav } from './audio/pcmRecorder';
+import { addTake } from './core/takes';
+import { TakesPage } from './ui/TakesPage';
 import { audioContext, ensureRunning, synth } from './audio/synth';
 import { exportLibrary, importLibrary } from './core/archive';
 import { isElectron, pickFiles, saveBlob } from './core/platform';
@@ -19,7 +22,7 @@ import { ImageScoreView } from './ui/ImageScoreView';
 import { Transport } from './ui/Transport';
 import { PracticePanel } from './ui/PracticePanel';
 
-type View = 'library' | 'score' | 'search' | 'import' | 'settings';
+type View = 'library' | 'score' | 'search' | 'import' | 'takes' | 'settings';
 
 const IDLE_POS: PlayerSnapshot = { state: 'idle', tick: 0, beatIndex: 0, timeSec: 0, totalSec: 0 };
 
@@ -41,6 +44,8 @@ export default function App() {
   const [micRecording, setMicRecording] = useState(false);
   const [internalBusy, setInternalBusy] = useState(false);
   const [lastTake, setLastTake] = useState<{ kind: 'mic' | 'internal'; name: string; blob: Blob } | null>(null);
+  const [takesVersion, setTakesVersion] = useState(0);
+  const [recSeconds, setRecSeconds] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const [volume, setVolume] = useState(0.7);
@@ -48,7 +53,8 @@ export default function App() {
   const playerRef = useRef<ScorePlayer | null>(null);
   const followRef = useRef<FollowController | null>(null);
   const detectorRef = useRef<PitchDetector | null>(null);
-  const micRef = useRef<MicRecorder | null>(null);
+  const micRef = useRef<PcmRecorder | null>(null);
+  const recTimerRef = useRef<number | null>(null);
   const viewerRef = useRef<ScoreViewerHandle | null>(null);
   const followModeRef = useRef(false);
   const listeningRef = useRef(false);
@@ -275,24 +281,41 @@ export default function App() {
       const res = await micRef.current?.stop();
       micRef.current = null;
       setMicRecording(false);
-      if (res && res.blob.size > 0) {
-        setLastTake({ kind: 'mic', name: '麦克风录音', blob: res.blob });
-        notify(`录音完成 ${res.durationSec.toFixed(1)}s，可点击保存`);
+      setRecSeconds(0);
+      if (recTimerRef.current) {
+        window.clearInterval(recTimerRef.current);
+        recTimerRef.current = null;
+      }
+      if (res && res.samples.length > 0) {
+        const wav = samplesToWav(res.samples, res.sampleRate);
+        const take = await addTake({
+          title: `${doc?.title ?? '即兴'} · 麦克风 ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`,
+          kind: 'mic',
+          blob: wav,
+          durationSec: res.durationSec,
+          scoreId: doc?.id,
+          scoreTitle: doc?.title,
+        });
+        setLastTake({ kind: 'mic', name: take.title, blob: wav });
+        setTakesVersion((v) => v + 1);
+        notify(`录音完成 ${res.durationSec.toFixed(1)}s，已存入录音库（可导出 MP3）`);
       }
       return;
     }
     try {
-      const rec = new MicRecorder();
+      const rec = new PcmRecorder();
       await rec.start();
       micRef.current = rec;
       setMicRecording(true);
+      setRecSeconds(0);
+      recTimerRef.current = window.setInterval(() => setRecSeconds((v) => v + 1), 1000);
       await ensureRunning(audioContext());
       playerRef.current?.play();
       notify('正在录音（同时播放曲谱）');
     } catch (err) {
       notify(`录音失败：${(err as Error).message}`);
     }
-  }, [micRecording, notify]);
+  }, [micRecording, notify, doc]);
 
   const recordInternal = useCallback(async () => {
     if (!timeline || !timeline.notes.length) {
@@ -303,8 +326,17 @@ export default function App() {
     try {
       const events = notesWithTime(timeline);
       const blob = await renderTimelineToWav(events, timeline.totalSec, { name: doc?.title });
-      setLastTake({ kind: 'internal', name: doc?.title ?? '内录', blob });
-      notify('内录完成（应用内音源离线渲染）');
+      const take = await addTake({
+        title: `${doc?.title ?? '曲目'} · 内录 ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`,
+        kind: 'internal',
+        blob,
+        durationSec: timeline.totalSec,
+        scoreId: doc?.id,
+        scoreTitle: doc?.title,
+      });
+      setLastTake({ kind: 'internal', name: take.title, blob });
+      setTakesVersion((v) => v + 1);
+      notify('内录完成（应用内音源离线渲染），已存入录音库');
     } catch (err) {
       notify(`内录失败：${(err as Error).message}`);
     } finally {
@@ -316,7 +348,7 @@ export default function App() {
     async (kind: 'mic' | 'internal') => {
       if (!lastTake) return;
       const name = `${(doc?.title ?? 'guitarflow').replace(/[\\/:*?"<>|]/g, '_')}-${kind === 'internal' ? '内录' : '录音'}`;
-      const saved = await saveRecording(lastTake.blob, name);
+      const saved = await saveBlob(`${name}.wav`, lastTake.blob);
       if (saved) notify(`已保存：${saved}`);
     },
     [lastTake, doc, notify],
@@ -420,6 +452,9 @@ export default function App() {
           <button className={view === 'import' ? 'active' : ''} onClick={() => setView('import')}>
             <span>⤓</span> 导入
           </button>
+          <button className={view === 'takes' ? 'active' : ''} onClick={() => setView('takes')}>
+            <span>⏺</span> 录音
+          </button>
           <button className={view === 'settings' ? 'active' : ''} onClick={() => setView('settings')}>
             <span>⚙</span> 设置
           </button>
@@ -465,6 +500,12 @@ export default function App() {
             onToggleFavorite={(id) => void favDoc(id)}
             onImport={() => setView('import')}
             onSearch={() => setView('search')}
+            onNotify={notify}
+            onOpenLocalDoc={async (localDoc) => {
+              await putScore(localDoc);
+              await refreshLibrary();
+              await openDoc(localDoc.id);
+            }}
           />
         )}
 
@@ -487,6 +528,8 @@ export default function App() {
             onNotify={notify}
           />
         )}
+
+        {view === 'takes' && <TakesPage onNotify={notify} refreshKey={takesVersion} />}
 
         {view === 'settings' && (
           <div className="page settings">
@@ -617,6 +660,7 @@ export default function App() {
                 onRecordMic={() => void toggleMicRecord()}
                 onRecordInternal={() => void recordInternal()}
                 micRecording={micRecording}
+                recordSeconds={recSeconds}
                 renderingInternal={internalBusy}
                 systemCaptureSupported={isElectron}
                 onRecordSystem={() => notify('系统内录：请在弹窗中选择「整个屏幕」并勾选共享音频')}

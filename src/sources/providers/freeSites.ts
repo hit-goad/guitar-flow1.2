@@ -244,46 +244,6 @@ export const jita17 = htmlSiteProvider({
 });
 
 /* ------------------------------------------------------------------ */
-/* Songsterr                                                           */
-/* ------------------------------------------------------------------ */
-
-interface SongsterrSong {
-  songId: number;
-  title: string;
-  artist: string;
-  tracks?: Array<{ name?: string; instrument?: string }>;
-}
-
-async function songsterrSearch(query: string): Promise<SearchHit[]> {
-  const url = `https://www.songsterr.com/api/songs?pattern=${encodeURIComponent(query)}&size=20`;
-  const list = await safely(() => getJson<SongsterrSong[]>(url), [] as SongsterrSong[], 'songsterr');
-  return list.slice(0, 20).map((s) => ({
-    providerId: 'songsterr',
-    sourceId: 'songsterr',
-    sourceName: 'Songsterr',
-    id: String(s.songId),
-    title: s.title,
-    artist: s.artist,
-    quality: 70,
-    gated: true,
-    preview: s.tracks?.map((t) => t.name).filter(Boolean).slice(0, 3).join(' / '),
-  }));
-}
-
-async function songsterrLoad(hit: SearchHit): Promise<ImportResult> {
-  // Songsterr 的完整谱需要会员；这里抓官方 "meta" 接口里的 measure 数据（有则转换）
-  const meta = await safely(
-    () => getJson<{ measures?: unknown[] }>(`https://www.songsterr.com/api/meta/${hit.id}/0`),
-    {},
-    'songsterr-meta',
-  );
-  if (!meta.measures?.length) {
-    throw new Error('Songsterr 该曲谱需要会员，未返回可转换的谱面数据');
-  }
-  throw new Error('Songsterr 数据格式已变更，暂不支持自动转换（可用浏览器打开原页后另存为 GP 导入）');
-}
-
-/* ------------------------------------------------------------------ */
 /* GitHub ChordPro 曲库                                                 */
 /* ------------------------------------------------------------------ */
 
@@ -334,15 +294,6 @@ export const ultimateGuitarProvider: Provider = {
   load: ugLoad,
 };
 
-export const songsterrProvider: Provider = {
-  id: 'songsterr',
-  name: 'Songsterr',
-  note: '仅搜索；完整谱需会员',
-  gated: true,
-  search: songsterrSearch,
-  load: songsterrLoad,
-};
-
 export const chordproGithubProvider: Provider = {
   id: 'chordproGithub',
   name: 'ChordPro 曲库',
@@ -352,4 +303,4 @@ export const chordproGithubProvider: Provider = {
   load: githubSongbookLoad,
 };
 
-[ultimateGuitarProvider, songsterrProvider, chordproGithubProvider, jitapu91, jita17].forEach(registerProvider);
+[ultimateGuitarProvider, chordproGithubProvider, jitapu91, jita17].forEach(registerProvider);

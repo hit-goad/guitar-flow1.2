@@ -1,7 +1,7 @@
 import type { ImportResult, Provider, SearchHit } from '../core/types';
 import { rankHits, searchScores } from '../core/fuzzy';
 import { allProviders, enabledProviders, providerConfig } from './base';
-import './providers/guitarworld';
+import './providers/cnFree';
 import './providers/freeSites';
 
 export interface SearchOutcome {

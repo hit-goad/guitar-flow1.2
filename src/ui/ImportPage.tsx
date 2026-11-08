@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import { importFile, importFromText } from '../import';
+import { recognizeTablature } from '../import/omr/omr';
 import { putScore } from '../core/library';
 import { httpGetText, pickFiles } from '../core/platform';
 
@@ -23,6 +24,9 @@ export function ImportPage({ onSaved, onNotify }: Props) {
   const [pasteArtist, setPasteArtist] = useState('');
   const [pasteText, setPasteText] = useState('');
   const [url, setUrl] = useState('');
+  const [omrText, setOmrText] = useState('');
+  const [omrInfo, setOmrInfo] = useState<{ systems: number; glyphs: number; confidence: number; pages: number } | null>(null);
+  const [omrBusy, setOmrBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleFiles = async (files: File[]) => {
@@ -79,6 +83,61 @@ export function ImportPage({ onSaved, onNotify }: Props) {
       onNotify(`转换失败：${(err as Error).message}`);
     } finally {
       setBusy(false);
+    }
+  };
+
+  const runOmr = async () => {
+    setOmrBusy(true);
+    try {
+      const files = await pickFiles('image/*,.pdf');
+      if (!files.length) return;
+      const parts: string[] = [];
+      let systems = 0;
+      let glyphs = 0;
+      let confSum = 0;
+      let confCount = 0;
+
+      const readImage = async (source: Blob) => {
+        const bitmap = await createImageBitmap(source);
+        const scale = bitmap.width > 2000 ? 2000 / bitmap.width : 1;
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(bitmap.width * scale);
+        canvas.height = Math.round(bitmap.height * scale);
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) throw new Error('画布不可用');
+        ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const res = recognizeTablature(img.data, canvas.width, canvas.height);
+        systems += res.systems;
+        glyphs += res.glyphs;
+        if (res.glyphs) {
+          confSum += res.confidence;
+          confCount++;
+        }
+        if (res.ascii) parts.push(res.ascii);
+        bitmap.close?.();
+      };
+
+      for (const file of files) {
+        if (/pdf$/i.test(file.name)) {
+          const { importPdf } = await import('../import/pdf');
+          const res = await importPdf(await file.arrayBuffer(), file.name);
+          for (const page of res.pages ?? []) await readImage(page);
+        } else {
+          await readImage(file);
+        }
+      }
+
+      const merged = parts.join('\n');
+      setOmrText(merged);
+      setOmrInfo({ systems, glyphs, confidence: confCount ? confSum / confCount : 0, pages: files.length });
+      if (!merged.trim()) onNotify('没有识别出内容：可能是五线谱或扫描质量太差，建议用图片谱模式');
+      else onNotify(`识别完成：${systems} 行谱表，${glyphs} 个音符，请检查后生成`);
+      if (!pasteTitle.trim() && files.length) setPasteTitle(files[0].name.replace(/\.[^.]+$/, ''));
+    } catch (err) {
+      onNotify(`识谱失败：${(err as Error).message}`);
+    } finally {
+      setOmrBusy(false);
     }
   };
 
@@ -143,6 +202,63 @@ export function ImportPage({ onSaved, onNotify }: Props) {
             e.target.value = '';
           }}
         />
+      </div>
+
+      <div className="panel omr-panel">
+        <div className="local-head">
+          <div>
+            <h3>图片 / PDF 识谱（Beta）</h3>
+            <p className="muted small">
+              自动检测六线谱表与品位数字，识别结果先展示成文本，你确认/改正后再生成可滚动曲谱。
+              印刷清晰的谱识别效果最好；手写或扫描模糊的谱建议直接用图片谱模式。
+            </p>
+          </div>
+          <button className="btn" disabled={omrBusy} onClick={() => void runOmr()}>
+            {omrBusy ? '识别中…' : '选择图片/PDF 识别'}
+          </button>
+        </div>
+
+        {omrInfo && (
+          <div className="omr-meta">
+            <span className="tag">谱表 {omrInfo.systems} 行</span>
+            <span className="tag subtle">读出 {omrInfo.glyphs} 个音符</span>
+            <span className="tag subtle">置信度 {(omrInfo.confidence * 100).toFixed(0)}%</span>
+            <span className="tag subtle">页数 {omrInfo.pages}</span>
+          </div>
+        )}
+
+        {omrText && (
+          <>
+            <textarea className="textarea" rows={10} value={omrText} onChange={(e) => setOmrText(e.target.value)} />
+            <div className="row">
+              <button
+                className="btn primary"
+                onClick={async () => {
+                  try {
+                    const out = importFromText(omrText, {
+                      title: pasteTitle.trim() || '识谱结果',
+                      artist: pasteArtist.trim(),
+                      sourceId: 'omr',
+                      sourceName: '图片识谱',
+                    });
+                    await putScore(out.doc);
+                    setPreviews((p) => [
+                      { name: '识谱结果', title: out.doc.title, warnings: out.warnings, noteCount: out.doc.meta.noteCount },
+                      ...p,
+                    ]);
+                    onSaved(out.doc.id);
+                    onNotify(`已生成《${out.doc.title}》`);
+                  } catch (err) {
+                    onNotify(`转换失败：${(err as Error).message}`);
+                  }
+                }}
+              >
+                用识别结果生成曲谱
+              </button>
+              <span className="muted small">识别内容可直接编辑：把读错的数字改掉再生成即可</span>
+            </div>
+          </>
+        )}
       </div>
 
       <div className="grid-2">

@@ -64,11 +64,15 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: android-actions/setup-android@v3
+      - name: 安装所需的 SDK 组件
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" ||             sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
       - name: 构建 APK / AAB
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew assembleDebug --stacktrace
           if [ -n "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" ]; then
             echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > app/release.keystore
             ./gradlew bundleRelease \
@@ -77,7 +81,7 @@ jobs:
               -Pandroid.injected.signing.key.alias=${{ secrets.ANDROID_KEY_ALIAS }} \
               -Pandroid.injected.signing.key.password=${{ secrets.ANDROID_KEY_PASSWORD }}
           else
-            ./gradlew bundleRelease
+            ./gradlew bundleRelease --stacktrace || echo "bundleRelease 未签名失败，保留 debug APK"
           fi
       - name: 收集产物
         run: |
